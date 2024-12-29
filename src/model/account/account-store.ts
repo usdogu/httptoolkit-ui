@@ -135,7 +135,10 @@ export class AccountStore {
             updateBillingDetailsUrl: '#',
             cancelSubscriptionUrl: '#',
             lastReceiptUrl: '#',
-            canManageSubscription: true
+            canManageSubscription: true,
+            sku: "pro-annual",
+            tierCode: "pro",
+            interval: "annual"
         }
         this.accountDataLastUpdated = Date.now();
 
