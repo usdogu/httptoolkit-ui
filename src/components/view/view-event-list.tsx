@@ -78,6 +78,10 @@ const ListContainer = styled.div<{ role: 'table' }>`
         box-shadow: rgba(0, 0, 0, 0.1) 0px 0px 30px inset;
         pointer-events: none;
     }
+
+    & > div > div[tabindex="0"]:focus {
+        outline: thin dotted ${p => p.theme.popColor};
+    }
 `;
 
 const Column = styled.div<{ role: 'cell' | 'columnheader' }>`
@@ -858,6 +862,16 @@ export class ViewEventList extends React.Component<ViewEventListProps> {
 
     private focusSelectedEvent = () => {
         this.focusEvent(this.props.selectedEvent);
+    }
+
+    focusList() {
+        const { selectedEvent } = this.props;
+        if (selectedEvent) {
+            this.scrollToEvent(selectedEvent);
+        } else {
+            const listWindow = this.listBodyRef.current?.parentElement;
+            listWindow?.focus();
+        }
     }
 
     private isListAtBottom() {
