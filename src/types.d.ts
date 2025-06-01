@@ -30,16 +30,14 @@ import type {
 
 import * as MockRTC from 'mockrtc';
 
-import type { ObservablePromise } from './util/observable';
+import type { ErrorLike } from './util/error';
 import type { ParsedUrl } from './util/url';
 
 import type { FailedTlsConnection } from './model/tls/failed-tls-connection';
 import type { TlsTunnel } from './model/tls/tls-tunnel';
-import type {
-    HttpExchange,
-    ViewableHttpExchange,
-    HttpVersion
-} from './model/http/exchange';
+import type { HttpExchange, HttpVersion } from './model/http/http-exchange';
+import type { HttpExchangeView } from './model/http/http-exchange-views';
+
 import type { WebSocketStream } from './model/websockets/websocket-stream';
 import type { RTCConnection } from './model/webrtc/rtc-connection';
 import type { RTCDataChannel } from './model/webrtc/rtc-data-channel';
@@ -48,6 +46,7 @@ import type { RTCMediaTrack } from './model/webrtc/rtc-media-track';
 import type { TrafficSource } from './model/http/sources';
 import type { EditableBody } from './model/http/editable-body';
 import type { ViewableContentType } from './model/events/content-types';
+import type { ObservableCache } from './model/observable-cache';
 
 // These are the HAR types as returned from parseHar(), not the raw types as defined in the HAR itself
 export type HarBody = { encodedLength: number, decoded: Buffer };
@@ -139,6 +138,9 @@ export type InputRuleEventDataMap = {
             message?: string,
             stack?: string
         }
+    },
+    'passthrough-websocket-connect': InputRuleEventDataMap['passthrough-request-head'] & {
+        subprotocols: string[]
     }
 };
 
@@ -181,7 +183,7 @@ export type HtkRequest = Omit<InputRequest, 'body' | 'path'> & {
     parsedUrl: ParsedUrl,
     source: TrafficSource,
     contentType: ViewableContentType,
-    cache: Map<symbol, unknown>,
+    cache: ObservableCache,
     body: MessageBody,
     trailers?: Trailers,
     rawTrailers?: RawTrailers
@@ -189,23 +191,41 @@ export type HtkRequest = Omit<InputRequest, 'body' | 'path'> & {
 
 export type HtkResponse = Omit<InputResponse, 'body'> & {
     contentType: ViewableContentType,
-    cache: Map<symbol, unknown>,
+    cache: ObservableCache,
     body: MessageBody
 };
 
-export type MessageBody = {
-    encoded: { byteLength: number } | Buffer,
-    decoded: Buffer | undefined,
-    decodedPromise: ObservablePromise<Buffer | undefined>,
-    decodingError: Error | undefined,
-    cleanup(): void
-};
+export interface MessageBody {
+    encodedByteLength: number;
+    decodedData: Buffer | undefined; // Set if decoded, undefined if pending or error
+
+    isPending(): this is PendingMessageBody;
+    isDecoded(): this is DecodedMessageBody;
+    isFailed(): this is FailedDecodeMessageBody;
+
+    waitForDecoding(): Promise<Buffer | undefined>;
+    cleanup(): void;
+}
+
+export interface PendingMessageBody extends MessageBody {
+    decodedData: undefined;
+}
+
+export interface DecodedMessageBody extends MessageBody {
+    decodedData: Buffer;
+}
+
+export interface FailedDecodeMessageBody extends MessageBody {
+    decodedData: undefined;
+    encodedData: Buffer | undefined;
+    decodingError: ErrorLike;
+}
 
 export type {
     FailedTlsConnection,
     TlsTunnel,
     HttpExchange,
-    ViewableHttpExchange,
+    HttpExchangeView,
     WebSocketStream,
     RTCConnection,
     RTCDataChannel,
@@ -219,6 +239,10 @@ export type CollectedEvent =
     | RTCConnection
     | RTCDataChannel
     | RTCMediaTrack;
+
+export type ViewableEvent =
+    | CollectedEvent
+    | HttpExchangeView;
 
 export type ExchangeMessage = HtkRequest | HtkResponse;
 export type RTCStream = RTCDataChannel | RTCMediaTrack;

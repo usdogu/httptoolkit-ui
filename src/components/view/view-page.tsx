@@ -13,11 +13,11 @@ import {
 import { observer, disposeOnUnmount, inject } from 'mobx-react';
 import * as portals from 'react-reverse-portal';
 
-import { WithInjected, CollectedEvent } from '../../types';
+import { WithInjected, CollectedEvent, HttpExchangeView } from '../../types';
 import { NARROW_LAYOUT_BREAKPOINT, styled } from '../../styles';
 import { useHotkeys, isEditable, windowSize, AriaCtrlCmd, Ctrl } from '../../util/ui';
 import { debounceComputed } from '../../util/observable';
-import { UnreachableCheck } from '../../util/error';
+import { UnreachableCheck, unreachableCheck } from '../../util/error';
 
 import { SERVER_SEND_API_SUPPORTED, serverVersion, versionSatisfies } from '../../services/service-versions';
 
@@ -27,7 +27,7 @@ import { EventsStore } from '../../model/events/events-store';
 import { RulesStore } from '../../model/rules/rules-store';
 import { AccountStore } from '../../model/account/account-store';
 import { SendStore } from '../../model/send/send-store';
-import { HttpExchange } from '../../model/http/exchange';
+import { HttpExchange } from '../../model/http/http-exchange';
 import { FilterSet } from '../../model/filters/search-filters';
 import { buildRuleFromExchange } from '../../model/rules/rule-creation';
 
@@ -114,7 +114,7 @@ const ViewPageKeyboardShortcuts = (props: {
         }
     }, [selectedEvent, props.onBuildRuleFromExchange, props.isPaidUser]);
 
-    useHotkeys('Ctrl+Delete, Cmd+Delete', (event) => {
+    useHotkeys('Ctrl+Delete, Cmd+Delete, Ctrl+Backspace, Cmd+Backspace', (event) => {
         if (isEditable(event.target)) return;
 
         if (selectedEvent) {
@@ -122,7 +122,7 @@ const ViewPageKeyboardShortcuts = (props: {
         }
     }, [selectedEvent, props.onDelete]);
 
-    useHotkeys('Ctrl+Shift+Delete, Cmd+Shift+Delete', (event) => {
+    useHotkeys('Ctrl+Shift+Delete, Cmd+Shift+Delete, Ctrl+Shift+Backspace, Cmd+Shift+Backspace', (event) => {
         props.onClear();
         event.preventDefault();
     }, [props.onClear]);
@@ -194,9 +194,13 @@ class ViewPage extends React.Component<ViewPageProps> {
 
         const filteredEvents = (this.currentSearchFilters.length === 0)
             ? events
-            : events.filter((event) =>
-                this.currentSearchFilters.every((f) => f.matches(event))
-            );
+            : events.filter((event) => {
+                if (event.isHttp() && event.wasTransformed) {
+                    return this.currentSearchFilters.every((f) => f.matches(event.downstream) || f.matches(event.upstream!))
+                } else {
+                    return this.currentSearchFilters.every((f) => f.matches(event))
+                }
+            });
 
         return {
             filteredEvents,
@@ -209,6 +213,23 @@ class ViewPage extends React.Component<ViewPageProps> {
         return _.find(this.props.eventsStore.events, {
             id: this.props.eventId
         });
+    }
+
+    @computed
+    get selectedExchange() {
+        const { contentPerspective } = this.props.uiStore;
+        if (!this.selectedEvent) return undefined;
+        if (!this.selectedEvent.isHttp()) return undefined;
+
+        return contentPerspective === 'client'
+            ? this.selectedEvent.downstream
+        : contentPerspective === 'server'
+            ? (this.selectedEvent.upstream ?? this.selectedEvent.downstream)
+        : contentPerspective === 'original'
+            ? this.selectedEvent.original
+        : contentPerspective === 'transformed'
+            ? this.selectedEvent.transformed
+        : unreachableCheck(contentPerspective)
     }
 
     private readonly contextMenuBuilder = new ViewEventContextMenuBuilder(
@@ -257,26 +278,27 @@ class ViewPage extends React.Component<ViewPageProps> {
             }
 
             const { expandedViewCard } = this.props.uiStore;
-
             if (!expandedViewCard) return;
 
+            const selectedHttpExchange = this.selectedExchange;
+
             // If you have a pane expanded, and select an event with no data
-            // for that pane, then disable the expansion
+            // for that pane, then disable the expansion:
             if (
-                !(selectedEvent.isHttp()) ||
+                !selectedHttpExchange ||
                 (
                     expandedViewCard === 'requestBody' &&
-                    !selectedEvent.hasRequestBody() &&
-                    !selectedEvent.requestBreakpoint
+                    !selectedHttpExchange.hasRequestBody() &&
+                    !selectedHttpExchange.downstream.requestBreakpoint
                 ) ||
                 (
                     expandedViewCard === 'responseBody' &&
-                    !selectedEvent.hasResponseBody() &&
-                    !selectedEvent.responseBreakpoint
+                    !selectedHttpExchange.hasResponseBody() &&
+                    !selectedHttpExchange.downstream.responseBreakpoint
                 ) ||
                 (
                     expandedViewCard === 'webSocketMessages' &&
-                    !(selectedEvent.isWebSocket() && selectedEvent.wasAccepted())
+                    !(selectedHttpExchange.isWebSocket() && selectedHttpExchange.wasAccepted)
                 )
             ) {
                 runInAction(() => {
@@ -328,7 +350,8 @@ class ViewPage extends React.Component<ViewPageProps> {
             }
         } else if (this.selectedEvent.isHttp()) {
             rightPane = <HttpDetailsPane
-                exchange={this.selectedEvent}
+                exchange={this.selectedExchange!}
+                perspective={this.props.uiStore.contentPerspective}
 
                 requestEditor={this.editors.request}
                 responseEditor={this.editors.response}
@@ -503,7 +526,7 @@ class ViewPage extends React.Component<ViewPageProps> {
     }
 
     @action.bound
-    onBuildRuleFromExchange(exchange: HttpExchange) {
+    onBuildRuleFromExchange(exchange: HttpExchangeView) {
         const { rulesStore, navigate } = this.props;
 
         if (!this.props.accountStore!.isPaidUser) return;
@@ -514,7 +537,7 @@ class ViewPage extends React.Component<ViewPageProps> {
     }
 
     @action.bound
-    async onPrepareToResendRequest(exchange: HttpExchange) {
+    async onPrepareToResendRequest(exchange: HttpExchangeView) {
         const { sendStore, navigate } = this.props;
 
         if (!this.props.accountStore!.isPaidUser) return;
@@ -558,9 +581,9 @@ class ViewPage extends React.Component<ViewPageProps> {
     @action.bound
     onClear(confirmRequired = true) {
         const { events } = this.props.eventsStore;
-        const someEventsPinned = _.some(events, { pinned: true });
+        const someEventsPinned = events.some(e => e.pinned === true);
         const allEventsPinned = events.length > 0 &&
-            _.every(events, { pinned: true });
+            events.every(e => e.pinned === true);
 
         if (allEventsPinned) {
             // We always confirm deletion of pinned exchanges:
