@@ -35,6 +35,8 @@ const VIEW_CARD_KEYS = [
     'rtcSessionOffer',
     'rtcSessionAnswer',
 
+    'rawTunnelPackets',
+
     'performance',
     'export'
 ] as const;
@@ -43,7 +45,8 @@ type ViewCardKey = typeof VIEW_CARD_KEYS[number];
 const EXPANDABLE_VIEW_CARD_KEYS = [
     'requestBody',
     'responseBody',
-    'webSocketMessages'
+    'webSocketMessages',
+    'rawTunnelPackets'
 ] as const;
 export type ExpandableViewCardKey = typeof EXPANDABLE_VIEW_CARD_KEYS[number];
 
@@ -240,6 +243,8 @@ export class UiStore {
         'webSocketMessages': { collapsed: false },
         'webSocketClose': { collapsed: false },
 
+        'rawTunnelPackets': { collapsed: false },
+
         'rtcConnection': { collapsed: false },
         'rtcSessionOffer': { collapsed: false },
         'rtcSessionAnswer': { collapsed: false },
@@ -250,6 +255,12 @@ export class UiStore {
 
     @observable
     expandedViewCard: ExpandableViewCardKey | undefined;
+
+    @observable
+    viewScrollPosition: number | 'end' = 'end';
+
+    @observable
+    selectedEventId: string | undefined;
 
     @computed
     get viewCardProps() {
@@ -435,6 +446,17 @@ export class UiStore {
 
     @persist @observable
     exportSnippetFormat: string | undefined;
+
+    // Actions for persisting view state when switching tabs
+    @action.bound
+    setViewScrollPosition(position: number | 'end') {
+        this.viewScrollPosition = position;
+    }
+
+    @action.bound
+    setSelectedEventId(eventId: string | undefined) {
+        this.selectedEventId = eventId;
+    }
 
     /**
      * This tracks the context menu state *only if it's not handled natively*. This state
