@@ -100,6 +100,19 @@ export class AccountStore {
 	private updateUser = flow(
 		function* (this: AccountStore) {
 			this.user = yield getLatestUserData();
+			this.user.subscription = {
+				status: "active",
+				plan: "pro-annual",
+				quantity: 1,
+				expiry: new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
+				updateBillingDetailsUrl: "#",
+				cancelSubscriptionUrl: "#",
+				lastReceiptUrl: "#",
+				canManageSubscription: true,
+				sku: "pro-annual",
+				tierCode: "pro",
+				interval: "annual",
+			};
 			this.user.isPaidUser = () => true;
 			this.accountDataLastUpdated = Date.now();
 
