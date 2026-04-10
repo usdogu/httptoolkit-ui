@@ -218,21 +218,31 @@ export class TransformingStep extends httpSteps.PassThroughStep {
 
 }
 
+const MatchReplaceSerializer = serializr.list(
+    serializr.custom(
+        ([key, value]: [RegExp, string]) =>
+            [{ source: key.source, flags: key.flags }, value],
+        ([key, value]: [{ source: string, flags: string }, string]) =>
+            [new RegExp(key.source, key.flags), value]
+    )
+);
+
 serializr.createModelSchema(TransformingStep, {
     uiType: serializeAsTag(() => 'req-res-transformer'),
     transformRequest: serializr.object(
         serializr.createSimpleSchema({
+            matchReplaceHost: serializr.object(
+                serializr.createSimpleSchema({
+                    replacements: MatchReplaceSerializer,
+                    '*': Object.assign(serializr.raw(), { pattern: { test: () => true } })
+                })
+            ),
+            matchReplacePath: MatchReplaceSerializer,
+            matchReplaceQuery: MatchReplaceSerializer,
             updateHeaders: serializeWithUndefineds,
             updateJsonBody: serializeWithUndefineds,
             replaceBody: serializeBuffer,
-            matchReplaceBody: serializr.list(
-                serializr.custom(
-                    ([key, value]: [RegExp, string]) =>
-                        [{ source: key.source, flags: key.flags }, value],
-                    ([key, value]: [{ source: string, flags: string }, string]) =>
-                        [new RegExp(key.source, key.flags), value]
-                )
-            ),
+            matchReplaceBody: MatchReplaceSerializer,
             '*': Object.assign(serializr.raw(), { pattern: { test: () => true } })
         })
     ),
@@ -326,6 +336,18 @@ serializr.createModelSchema(RequestAndResponseBreakpointStep, {
     type: serializr.primitive()
 }, (context) => new RequestAndResponseBreakpointStep(context.args.rulesStore));
 
+export type RequestWebhookEvents = httpSteps.RequestWebhookEvents;
+
+export class WebhookStep extends httpSteps.WebhookStep {
+    explain() {
+        return `enable ${
+            this.events.length === 1 ? this.events[0] : ''
+        } webhooks`;
+    }
+}
+
+export type DelayStep = httpSteps.DelayStep;
+export const DelayStep = httpSteps.DelayStep;
 export type TimeoutStep = httpSteps.TimeoutStep;
 export const TimeoutStep = httpSteps.TimeoutStep;
 export type CloseConnectionStep = httpSteps.CloseConnectionStep;
@@ -358,7 +380,8 @@ export const HttpStepLookup = {
     'req-res-transformer': TransformingStep,
     'request-breakpoint': RequestBreakpointStep,
     'response-breakpoint': ResponseBreakpointStep,
-    'request-and-response-breakpoint': RequestAndResponseBreakpointStep
+    'request-and-response-breakpoint': RequestAndResponseBreakpointStep,
+    'webhook': WebhookStep
 };
 
 type HttpMatcherClass = typeof HttpMatcherLookup[keyof typeof HttpMatcherLookup];

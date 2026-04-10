@@ -62,7 +62,9 @@ export class RTCConnectionDetailsPane extends React.Component<{
     @action.bound
     toggleCollapse(streamId: string) {
         this.streamCardState[streamId] = {
-            collapsed: !this.streamCardState[streamId]?.collapsed ?? true
+            collapsed: this.streamCardState[streamId]?.collapsed !== undefined
+                ? !this.streamCardState[streamId]?.collapsed
+                : true
         };
     }
 
@@ -145,7 +147,7 @@ export class RTCConnectionDetailsPane extends React.Component<{
                     <RTCDataChannelCard
                         key={dataChannel.id}
                         dataChannel={dataChannel}
-                        isPaidUser={accountStore!.isPaidUser}
+                        isPaidUser={accountStore!.user.isPaidUser()}
                         streamMessageEditor={this.dataChannelEditors[i]}
 
                         expanded={false}

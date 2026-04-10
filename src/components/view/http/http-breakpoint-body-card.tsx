@@ -9,7 +9,7 @@ import {
     bufferToString,
     stringToBuffer
 } from '../../../util/buffer';
-import { getHeaderValue } from '../../../util/headers';
+import { getHeaderValue } from '../../../model/http/headers';
 import {
     EditableContentType,
     EditableContentTypes,
@@ -124,6 +124,7 @@ export class HttpBreakpointBodyCard extends React.Component<ExpandableCardProps 
                     value={bodyString}
                     onChange={this.onBodyChange}
                     expanded={!!expanded}
+                    maxHeight='50cqh'
                 />
             </EditorCardContent>
         </CollapsibleCard>;

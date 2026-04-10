@@ -8,21 +8,19 @@ import {
     WEBSOCKET_MESSAGING_RULES_SUPPORTED,
     JSONRPC_RESPONSE_RULE_SUPPORTED,
     RTC_RULES_SUPPORTED,
-    CONNECTION_RESET_SUPPORTED
+    CONNECTION_RESET_SUPPORTED,
+    WEBHOOK_AND_DELAY_RULES
 } from '../../services/service-versions';
 
 import {
-    StaticResponseStep,
-    ForwardToHostStep,
-    TimeoutStep,
-    CloseConnectionStep,
-    ResetConnectionStep,
-    FromFileResponseStep,
-    TransformingStep,
     HttpMatcherLookup,
     HttpStepLookup,
     HttpRule,
-    HttpInitialMatcherClasses
+    HttpInitialMatcherClasses,
+    RequestBreakpointStep,
+    ResponseBreakpointStep,
+    RequestAndResponseBreakpointStep,
+    PassThroughStep
 } from './definitions/http-rule-definitions';
 
 import {
@@ -30,9 +28,8 @@ import {
     WebSocketStepLookup,
     WebSocketRule,
     WebSocketInitialMatcherClasses,
-    EchoWebSocketStep,
-    RejectWebSocketStep,
-    ListenWebSocketStep
+    WebSocketForwardToHostStep,
+    WebSocketPassThroughStep
 } from './definitions/websocket-rule-definitions';
 
 import {
@@ -57,6 +54,10 @@ import {
     RTCRule,
     RTCInitialMatcherClasses
 } from './definitions/rtc-rule-definitions';
+
+export type {
+    MatchReplacePairs
+} from 'mockttp';
 
 /// --- Part-generic logic ---
 
@@ -90,7 +91,9 @@ const PartVersionRequirements: {
     'ws-echo': WEBSOCKET_MESSAGING_RULES_SUPPORTED,
     'ws-listen': WEBSOCKET_MESSAGING_RULES_SUPPORTED,
     'ws-reject': WEBSOCKET_MESSAGING_RULES_SUPPORTED,
-    'reset-connection': CONNECTION_RESET_SUPPORTED
+    'reset-connection': CONNECTION_RESET_SUPPORTED,
+    'delay': WEBHOOK_AND_DELAY_RULES,
+    'webhook': WEBHOOK_AND_DELAY_RULES
 };
 
 /// --- Matchers ---
@@ -205,6 +208,11 @@ const InitialMatcherClasses = [
     ...RTCInitialMatcherClasses
 ];
 
+export const StableRuleTypes = [
+    'http',
+    'websocket'
+];
+
 export const getInitialMatchers = () => InitialMatcherClasses.filter((matcherCls) => {
     const matcherKey = MatcherClassKeyLookup.get(matcherCls)!;
     return serverSupports(PartVersionRequirements[matcherKey]);
@@ -284,7 +292,7 @@ const HiddenSteps = [
     'callback',
     'stream',
     'wait-for-rtc-track', // Not super useful here I think
-    'delay' // Not exposed yet until we have more multi-step options
+    'wait-for-request-body', // Not super useful here I think
 ] as const;
 
 const MatcherLimitedSteps: {
@@ -374,17 +382,16 @@ export const isFinalStep = (step: Step) => {
     return StepLookup[step.type].isFinal === true;
 }
 
-const PaidStepClasses: StepClass[] = [
-    StaticResponseStep,
-    FromFileResponseStep,
-    ForwardToHostStep,
-    TransformingStep,
-    TimeoutStep,
-    CloseConnectionStep,
-    ResetConnectionStep,
-    EchoWebSocketStep,
-    RejectWebSocketStep,
-    ListenWebSocketStep
+const NonPaidStepClasses: StepClass[] = [
+    // HTTP:
+    RequestBreakpointStep,
+    ResponseBreakpointStep,
+    RequestAndResponseBreakpointStep,
+    PassThroughStep,
+    // WS:
+    WebSocketPassThroughStep,
+    WebSocketForwardToHostStep,
+    // All non-HTTP/WS are free
 ];
 
 export const isPaidStep = (
@@ -392,7 +399,7 @@ export const isPaidStep = (
     step: Step
 ) => {
     if (ruleType !== 'http' && ruleType !== 'websocket') return false;
-    return _.some(PaidStepClasses, (cls) => step instanceof cls);
+    return !_.some(NonPaidStepClasses, (cls) => step instanceof cls);
 }
 
 export const isPaidStepClass = (
@@ -400,7 +407,17 @@ export const isPaidStepClass = (
     stepClass: StepClass
 ) => {
     if (ruleType !== 'http' && ruleType !== 'websocket') return false;
-    return PaidStepClasses.includes(stepClass);
+    return !NonPaidStepClasses.includes(stepClass);
+}
+
+export function areStepsModifying(stepTypes: StepClassKey[] | undefined): stepTypes is StepClassKey[] {
+    // We don't show rule details or edit markers for no-modification rules
+    return !!stepTypes?.length &&
+        !stepTypes?.every(
+            type => type === 'passthrough' ||
+                    type === 'ws-passthrough' ||
+                    type === 'webhook'
+        );
 }
 
 /// --- Rules ---

@@ -152,7 +152,7 @@ export class ProxyStore {
         // logout & subscription expiration (even if that happened while the app was
         // closed), but don't get reset when the app starts with stale account data.
         observe(accountStore, 'accountDataLastUpdated', () => {
-            if (!accountStore.isPaidUser) {
+            if (!accountStore.user.isPaidUser()) {
                 this.setPortConfig(undefined);
                 this.http2Enabled = 'fallback';
                 this.tlsPassthroughConfig = [];
@@ -173,11 +173,15 @@ export class ProxyStore {
             http: any,
             webrtc: any
         }>({
-            adminServerUrl: 'http://127.0.0.1:45456'
+            adminServerUrl: 'http://127.0.0.1:45456',
+            adminStreamReconnectAttempts: Infinity
         });
 
+        // These are persisted initially, so we know if the user updates them that we
+        // need to restart the proxy:
         this._http2CurrentlyEnabled = this.http2Enabled;
         this._currentTlsPassthroughConfig = _.cloneDeep(this.tlsPassthroughConfig);
+        this._currentKeyLogFilePath = this.keyLogFilePath;
 
         this.monitorRemoteClientConnection(this.adminClient);
 
@@ -189,7 +193,8 @@ export class ProxyStore {
                     // User configurable settings:
                     http2: this._http2CurrentlyEnabled,
                     https: {
-                        tlsPassthrough: this._currentTlsPassthroughConfig
+                        tlsPassthrough: this._currentTlsPassthroughConfig,
+                        keyLogFile: this._currentKeyLogFilePath
                     } as MockttpHttpsOptions, // Cert/Key options are set by the server
                     socks: true,
                     passthrough: this.accountStore.featureFlags.includes('raw-tunnels')
@@ -233,7 +238,29 @@ export class ProxyStore {
         });
     });
 
-    private monitorRemoteClientConnection(client: PluggableAdmin.AdminClient<{}>) {
+    @observable
+    streamDisconnected: boolean = false;
+
+    private async monitorRemoteClientConnection(client: PluggableAdmin.AdminClient<{}>) {
+        // Track stream connect/disconnected state:
+        client.on('stream-reconnecting', action(() => {
+            console.log('Admin client stream reconnecting...');
+            this.streamDisconnected = true;
+        }));
+
+        client.on('stream-reconnected', action(() => {
+            console.log('Admin client reconnected');
+            this.streamDisconnected = false;
+        }));
+
+        // We show the below as disconnection, but we generally won't recover - this
+        // probably means the server has unexpectedly cleanly shut down.
+        client.on('stopped', action(() => {
+            console.log('Server stopped');
+            this.streamDisconnected = true;
+        }));
+
+        // Log various other related events for debugging:
         client.on('stream-error', (err) => {
             console.log('Admin client stream error', err);
         });
@@ -242,19 +269,6 @@ export class ProxyStore {
         });
         client.on('stream-reconnect-failed', (err) => {
             logError(err.message ? err : new Error('Client reconnect error'), { cause: err });
-
-            alert("Server disconnected unexpectedly, app restart required.\n\nPlease report this at github.com/httptoolkit/httptoolkit.");
-            setTimeout(() => { // Tiny wait for any other UI events to fire (error reporting/logging/other UI responsiveness)
-                if (DesktopApi.restartApp) {
-                    // Where possible (recent desktop release) we restart the whole app directly
-                    DesktopApi.restartApp();
-                } else if (!navigator.platform?.startsWith('Mac')) {
-                    // If not, on Windows & Linux we just close the window (which restarts)
-                    window.close();
-                }
-                // On Mac, app exit is independent from window exit, so we can't force that here,
-                // but hopefully this alert will lead the user to do so themselves.
-            }, 10);
         });
     }
 
@@ -294,6 +308,13 @@ export class ProxyStore {
     private _currentTlsPassthroughConfig: Array<{ hostname: string }> = [];
     get currentTlsPassthroughConfig() {
         return this._currentTlsPassthroughConfig;
+    }
+
+    @persist @observable
+    keyLogFilePath: string | undefined = undefined;
+    private _currentKeyLogFilePath: string | undefined = this.keyLogFilePath;
+    get currentKeyLogFilePath() {
+        return this._currentKeyLogFilePath;
     }
 
     setRequestRules = (...rules: RequestRuleData[]) => {

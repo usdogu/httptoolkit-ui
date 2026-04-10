@@ -30,10 +30,12 @@ import { ModifyPage } from './modify/modify-page';
 import { SendPage } from './send/send-page';
 import { SettingsPage } from './settings/settings-page';
 
-import { PlanPicker } from './account/plan-picker';
 import { ModalOverlay } from './account/modal-overlay';
+import { LoginModal } from './account/login-modal';
+import { PlanPicker } from './account/plan-picker';
 import { CheckoutSpinner } from './account/checkout-spinner';
 import { HtmlContextMenu } from './html-context-menu';
+import { DisconnectedWarning } from './disconnected-warning';
 
 const AppContainer = styled.div<{ inert?: boolean }>`
     display: flex;
@@ -96,7 +98,7 @@ class App extends React.Component<{
 
     @computed
     get canVisitSettings() {
-        return this.props.accountStore.isPaidUser || this.props.accountStore.isPastDueUser;
+        return this.props.accountStore.user.userHasSubscription();
     }
 
     @computed
@@ -229,9 +231,18 @@ class App extends React.Component<{
                     <Route path={'/send'} pageComponent={SendPage} />
                     <Route path={'/settings'} pageComponent={SettingsPage} />
                 </Router>
+
+                <DisconnectedWarning />
             </AppContainer>
 
             { !!modal && <ModalOverlay /> }
+
+            {
+                modal === 'login' &&
+                    <LoginModal
+                        accountStore={this.props.accountStore}
+                    />
+            }
 
             { modal === 'pick-a-plan' &&
                 <PlanPicker

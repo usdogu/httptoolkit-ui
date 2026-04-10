@@ -143,15 +143,6 @@ const HeaderDocsLink = styled(DocsLink)`
     margin-top: 10px;
 `;
 
-const PseudoHeadersHiddenMessage = styled.span`
-    grid-column: 2 / -1;
-    font-style: italic;
-`;
-
-const PseudoHeadersContent = styled(CollapsibleSectionBody)`
-    line-height: 1.3;
-`;
-
 const getHeaderDescription = (
     name: string,
     value: string,
@@ -203,7 +194,7 @@ export const HeaderDetails = inject('accountStore')(observer((props: {
                 key,
                 value,
                 props.requestUrl,
-                props.accountStore!.isPaidUser
+                props.accountStore!.user.isPaidUser()
             )
 
             return <CollapsibleSection
@@ -223,3 +214,12 @@ export const HeaderDetails = inject('accountStore')(observer((props: {
         }) }
     </HeadersGrid>;
 }));
+
+export const HeaderHeadingContainer = styled.div<{ open?: boolean }>`
+    display: flex;
+    align-items: baseline;
+    justify-content: flex-start;
+    ${p => p.open !== true && `
+        margin-bottom: -10px;
+    `}
+`;

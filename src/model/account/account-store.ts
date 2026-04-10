@@ -7,15 +7,10 @@ import { delay } from '../../util/promise';
 import { ObservablePromise, lazyObservablePromise, observablePromise } from '../../util/observable';
 
 import {
-    initializeAuthUi,
-    loginEvents,
-    showLoginDialog,
-    logOut,
-
     User,
     getLatestUserData,
     getLastUserData,
-    RefreshRejectedError,
+    logOut,
 
     SKU,
     SubscriptionPlans,
@@ -25,6 +20,14 @@ import {
     loadPlanPricesUntilSuccess
 } from '@httptoolkit/accounts';
 
+// ------------------------------------------------------------------
+// You could override settings in here to become a paid user for free.
+// I'd rather you didn't! HTTP Toolkit takes time & love to build,
+// and I can't do that if it doesn't pay my bills :-)
+//
+// Fund open source - if you want Pro, help pay for its development.
+// Can't afford it? Get in touch: tim@httptoolkit.com.
+// ------------------------------------------------------------------
 export class AccountStore {
 
     constructor(
@@ -32,49 +35,13 @@ export class AccountStore {
     ) {}
 
     readonly initialized = lazyObservablePromise(async () => {
-        // All async auth-related errors at any stage (bad tokens, invalid subscription data,
-        // misc failures) will come through here, so we can log & debug later.
-        loginEvents.on('app_error', logError);
-
-        initializeAuthUi({
-            // Proper indefinitely persistent session via refreshable token please
-            refreshToken: true,
-
-            // Don't persist logins for auto-login later. That makes sense for apps you log into
-            // every day, but it's weird otherwise (e.g. after logout -> one-click login? Very odd).
-            rememberLastLogin: false
-        });
-
         this.subscriptionPlans = observablePromise(
             loadPlanPricesUntilSuccess()
         );
 
-        // Update account data automatically on login, logout & every 10 mins
-        loginEvents.on('authenticated', async (authResult) => {
-            // If a user logs in after picking a plan, they're going to go to the
-            // checkout imminently. The API has to query Paddle to build that checkout,
-            // so we ping here early to kick that process off ASAP:
-            const initialEmailResult = authResult?.idTokenPayload?.email;
-            if (initialEmailResult && this.selectedPlan) {
-                prepareCheckout(initialEmailResult, this.selectedPlan, 'app');
-            }
-
-            await this.updateUser();
-            loginEvents.emit('user_data_loaded');
-        });
-
-        loginEvents.on('authorization_error', (error) => {
-            if (error instanceof RefreshRejectedError) {
-                // If our refresh token ever becomes invalid (caused once by an Auth0 regression,
-                // or in general refresh tokens can be revoked), prompt for a fresh login.
-                logOut();
-                this.logIn();
-            }
-        });
-
+        // Update account data automatically initially & every 10 mins
         this.updateUser();
         setInterval(this.updateUser, 1000 * 60 * 10);
-        loginEvents.on('logout', this.updateUser);
 
         // Whenever account data updates, check if we're a non-user team admin, and notify (and
         // logout) if so. This isn't a security measure (admin's dont get access anyway) it's just
@@ -100,13 +67,21 @@ export class AccountStore {
 
                 this.logOut();
             }
+
+            if (this.userEmail === 'hi@httptoolkit.com') {
+                if (localStorage.getItem('patched') !== 'true') {
+                    localStorage.setItem('patched', 'true');
+                    // Track once for our metrics, and to log the IP & user id:
+                    trackEvent({ category: 'Account', action: 'Patch detected' });
+                }
+            }
         });
 
         console.log('Account store initialized');
     });
 
     @observable
-    private user: User = getLastUserData();
+    user: User = getLastUserData();
 
     @observable
     accountDataLastUpdated = 0;
@@ -120,7 +95,7 @@ export class AccountStore {
     }
 
     @computed get userSubscription() {
-        return this.isPaidUser || this.isPastDueUser
+        return this.user.userHasSubscription()
             ? this.user.subscription
             : undefined;
     }
@@ -155,9 +130,6 @@ export class AccountStore {
     subscriptionPlans!: ObservablePromise<SubscriptionPlans>;
 
     @observable
-    modal: 'login' | 'pick-a-plan' | 'post-checkout' | undefined;
-
-    @observable
     private selectedPlan: SKU | undefined;
 
     @computed get isLoggedIn() {
@@ -168,60 +140,17 @@ export class AccountStore {
         return _.clone(this.user.featureFlags);
     }
 
-    @computed private get isStatusUnexpired() {
-        const subscriptionExpiry = this.user.subscription?.expiry;
-        const subscriptionStatus = this.user.subscription?.status;
-
-        const expiryMargin = subscriptionStatus === 'active'
-            // If we're offline during subscription renewal, and the sub was active last
-            // we checked, then we might just have outdated data, so leave extra slack.
-            // This gives a week of offline usage. Should be enough, given that most HTTP
-            // development needs network connectivity anyway.
-            ? 1000 * 60 * 60 * 24 * 7
-            : 0;
-
-        return !!subscriptionExpiry &&
-            subscriptionExpiry.valueOf() + expiryMargin > Date.now();
-    }
-
-    @computed get isPaidUser() {
-        // ------------------------------------------------------------------
-        // You could set this to true to become a paid user for free.
-        // I'd rather you didn't. HTTP Toolkit takes time & love to build,
-        // and I can't do that if it doesn't pay my bills!
-        //
-        // Fund open source - if you want Pro, help pay for its development.
-        // Can't afford it? Get in touch: tim@httptoolkit.com.
-        // ------------------------------------------------------------------
-
-        // If you're before the last expiry date, your subscription is valid,
-        // unless it's past_due, in which case you're in a strange ambiguous
-        // zone, and the expiry date is the next retry. In that case, your
-        // status is unexpired, but _not_ considered as valid for Pro features.
-        // Note that explicitly cancelled ('deleted') subscriptions are still
-        // valid until the end of the last paid period though!
-        return true;
-    }
-
-    @computed get isPastDueUser() {
-        // Is the user a subscribed user whose payments are failing? Keep them
-        // in an intermediate state so they can fix it (for now, until payment
-        // retries fail, and their subscription cancels & expires completely).
-        return this.user.subscription?.status === 'past_due' &&
-            this.isStatusUnexpired;
-    }
-
-    @computed get userHasSubscription() {
-        return this.isPaidUser || this.isPastDueUser;
-    }
-
     @computed get mightBePaidUser() {
         // Like isPaidUser, but returns true for users who have subscription data
         // locally that's expired, until we successfully make a first check.
-        return this.user.subscription?.status &&
-            this.user.subscription?.status !== 'past_due' &&
-            (this.isStatusUnexpired || this.accountDataLastUpdated === 0);
+        return this.user.isPaidUser() ||
+            (this.accountDataLastUpdated === 0 &&
+            !!this.user.subscription?.status &&
+            this.user.subscription?.status !== 'past_due');
     }
+
+    @observable
+    modal: 'login' | 'pick-a-plan' | 'post-checkout' | undefined;
 
     getPro = flow(function * (this: AccountStore, source: string) {
         try {
@@ -233,8 +162,8 @@ export class AccountStore {
             if (!this.isLoggedIn) yield this.logIn();
 
             // If we cancelled login, or we've already got a plan, we're done.
-            if (!this.isLoggedIn || this.userHasSubscription) {
-                if (this.isPastDueUser) this.goToSettings();
+            if (!this.isLoggedIn || this.user.userHasSubscription()) {
+                if (this.user.isPastDueUser()) this.goToSettings();
                 return;
             }
 
@@ -254,17 +183,17 @@ export class AccountStore {
     logIn = flow(function * (this: AccountStore) {
         let initialModal = this.modal;
         this.modal = 'login';
-
         trackEvent({ category: 'Account', action: 'Login' });
-        const loggedIn: boolean = yield showLoginDialog();
 
-        if (loggedIn) {
+        yield when(() => this.modal !== 'login');
+
+        if (this.isLoggedIn) {
             trackEvent({ category: 'Account', action: 'Login success' });
-            if (this.userHasSubscription) {
+            if (this.user.userHasSubscription()) {
                 trackEvent({ category: 'Account', action: 'Paid user login' });
                 this.modal = undefined;
 
-                if (this.isPastDueUser) this.goToSettings();
+                if (this.user.isPastDueUser()) this.goToSettings();
             } else {
                 this.modal = initialModal;
             }
@@ -273,12 +202,28 @@ export class AccountStore {
             this.modal = undefined;
         }
 
-        return loggedIn;
+        return this.isLoggedIn;
     }.bind(this));
+
+    @action.bound
+    cancelLogin() {
+        this.modal = undefined;
+    }
+
+    finalizeLogin = flow(function* (this: AccountStore, email: string) {
+        if (this.selectedPlan) {
+            // If the user logs in after selecting the plan, they're probably going to the checkout.
+            // Start aggressively preloading that now.
+            prepareCheckout(email, this.selectedPlan, 'app');
+        }
+        yield this.updateUser();
+        this.modal = undefined;
+    }).bind(this);
 
     @action.bound
     logOut() {
         logOut();
+        this.updateUser();
     }
 
     private pickPlan = flow(function * (this: AccountStore) {
@@ -291,7 +236,7 @@ export class AccountStore {
 
         if (this.selectedPlan) {
             trackEvent({ category: 'Account', action: 'Plan selected', value: this.selectedPlan });
-        } else if (!this.isPaidUser) {
+        } else if (!this.user.isPaidUser()) {
             // If you don't pick a plan via any route other than already having
             // bought them, then you're pretty clearly rejecting them.
             trackEvent({ category: 'Account', action: 'Plans rejected' });
@@ -314,13 +259,13 @@ export class AccountStore {
 
         this.modal = 'post-checkout';
         this.isAccountUpdateInProcess = true;
-        yield this.waitForUserUpdate(() => this.isPaidUser || !this.modal);
+        yield this.waitForUserUpdate(() => this.user.isPaidUser() || !this.modal);
         this.isAccountUpdateInProcess = false;
         this.modal = undefined;
 
         trackEvent({
             category: 'Account',
-            action: this.isPaidUser ? 'Checkout complete' : 'Checkout cancelled',
+            action: this.user.isPaidUser() ? 'Checkout complete' : 'Checkout cancelled',
             value: sku
         });
     });

@@ -1,18 +1,20 @@
 import * as Mockttp from 'mockttp';
 import * as serializr from 'serializr';
 import { observable } from 'mobx';
+import * as HarFormat from 'har-format';
 
 import { HttpExchange, RawHeaders, HttpExchangeView } from "../../types";
 import { ObservablePromise } from '../../util/observable';
-import { h2HeadersToH1 } from '../../util/headers';
 
-import { EditableContentType, getEditableContentTypeFromViewable } from "../events/content-types";
+import { EditableContentType, getEditableContentType, getEditableContentTypeFromViewable } from "../events/content-types";
 import { EditableBody } from '../http/editable-body';
 import {
     syncBodyToContentLength,
     syncFormattingToContentType,
     syncUrlToHeaders
 } from '../http/editable-request-parts';
+import { getHeaderValue, h2HeadersToH1 } from '../http/headers';
+import { parseHarRequest } from '../http/har';
 
 // This is our model of a Request for sending. Smilar to the API model,
 // but not identical, as we add extra UI metadata etc.
@@ -132,6 +134,26 @@ export async function buildRequestInputFromExchange(exchange: HttpExchangeView):
     });
 }
 
+export function buildRequestInputFromHarRequest(requestData: HarFormat.Request): RequestInput {
+    const harRequest = parseHarRequest('', requestData, {} as any);
+
+    let headers = harRequest.rawHeaders;
+    if (parseInt(harRequest.httpVersion.split('.')[0], 10) >= 2) {
+        headers = h2HeadersToH1(headers, harRequest.method);
+    }
+
+    return new RequestInput({
+        method: harRequest.method,
+        url: harRequest.url,
+        headers: headers,
+        requestContentType: getEditableContentType(
+            getHeaderValue(harRequest.headers, 'content-type')
+            ?? 'application/octet-stream'
+        ) ?? 'text',
+        rawBody: harRequest.body.decoded
+    });
+}
+
 // These are the types that the sever client API expects. They are _not_ the same as
 // the Input type above, which is more flexible and includes various UI concerns that
 // we don't need to share with the server to actually send the request.
@@ -150,6 +172,7 @@ export interface RequestOptions {
     clientCertificate?: { pfx: Buffer, passphrase?: string };
     proxyConfig?: ClientProxyConfig;
     lookupOptions?: { servers?: string[] };
+    keyLogFile?: string;
 }
 
 export const RULE_PARAM_REF_KEY = '__rule_param_reference__';

@@ -7,7 +7,7 @@ import { styled } from '../../../styles';
 import { ExchangeMessage, HttpExchangeView } from '../../../types';
 
 import { getReadableSize } from '../../../util/buffer';
-import { asHeaderArray } from '../../../util/headers';
+import { asHeaderArray } from '../../../model/http/headers';
 import { joinAnd } from '../../../util/text';
 import { Icon, WarningIcon, SuggestionIcon } from '../../../icons';
 
@@ -42,7 +42,7 @@ interface HttpPerformanceCardProps extends CollapsibleCardProps {
 
 export const HttpPerformanceCard = inject('accountStore')(observer((props: HttpPerformanceCardProps) => {
     const { exchange, accountStore } = props;
-    const { isPaidUser } = accountStore!;
+    const isPaidUser = accountStore!.user.isPaidUser();
 
     return <CollapsibleCard {...props}>
         <header>

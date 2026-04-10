@@ -16,11 +16,13 @@ import {
     InputWebSocketMessage,
     TlsSocketMetadata,
     ViewableEvent,
-    HttpExchangeView
+    HttpExchangeView,
+    RawHeaders,
+    RawTrailers
 } from '../../types';
 
 import { stringToBuffer } from '../../util/buffer';
-import { getHeaderValues, getHeaderValue } from '../../util/headers';
+import { getHeaderValues, getHeaderValue } from './headers';
 import { ObservablePromise, observablePromise } from '../../util/observable';
 import { unreachableCheck } from '../../util/error';
 
@@ -104,9 +106,15 @@ export async function generateHar(
     events: readonly ViewableEvent[],
     options: HarGenerationOptions = { bodySizeLimit: HAR_BODY_SIZE_LIMIT }
 ): Promise<Har> {
-    const [exchanges, otherEvents] = _.partition(events, e => e.isHttp()) as [
+    const [allExchanges, otherEvents] = _.partition(events, e => e.isHttp()) as [
         HttpExchangeView[], CollectedEvent[]
     ];
+
+    // Filter out exchanges with client errors (fundamental request parsing failures) -
+    // these contain best-guess data that may not be valid in a HAR:
+    const exchanges = allExchanges.filter(e =>
+        !e.tags.some(tag => tag.startsWith('client-error:'))
+    );
 
     const errors = otherEvents.filter(e => e.isTlsFailure()) as FailedTlsConnection[];
 
@@ -128,13 +136,8 @@ export async function generateHar(
     };
 }
 
-function asHarHeaders(headers: Headers | Trailers) {
-    return _.map(headers, (headerValue, headerKey) => ({
-        name: headerKey,
-        value: _.isArray(headerValue)
-            ? headerValue.join(',')
-            : headerValue!
-    }))
+function asHarHeaders(headers: RawHeaders | RawTrailers) {
+    return headers.map(([name, value]) => ({ name, value }));
 }
 
 function asHtkHeaders(headers: HarFormat.Header[]) {
@@ -201,9 +204,9 @@ export function generateHarRequest(
         url: request.parsedUrl.toString(),
         httpVersion: `HTTP/${request.httpVersion || '1.1'}`,
         cookies: asHarRequestCookies(request.headers),
-        headers: asHarHeaders(request.headers),
-        ...(request.trailers ? {
-            _trailers: asHarHeaders(request.trailers)
+        headers: asHarHeaders(request.rawHeaders),
+        ...(request.rawTrailers ? {
+            _trailers: asHarHeaders(request.rawTrailers)
         } : {}),
         queryString: Array.from(request.parsedUrl.searchParams.entries()).map(
             ([paramKey, paramValue]) => ({
@@ -357,7 +360,7 @@ async function generateHarResponse(
         statusText: response.statusMessage,
         httpVersion: `HTTP/${request.httpVersion || '1.1'}`,
         cookies: asHarResponseCookies(response.headers),
-        headers: asHarHeaders(response.headers),
+        headers: asHarHeaders(response.rawHeaders),
         content: Object.assign(
             {
                 mimeType: getHeaderValue(response.headers, 'content-type') ||
@@ -731,7 +734,7 @@ function cleanRawHarData(harContents: any) {
     return harContents;
 }
 
-function parseHarRequest(
+export function parseHarRequest(
     id: string,
     request: ExtendedHarRequest,
     timingEvents: TimingEvents

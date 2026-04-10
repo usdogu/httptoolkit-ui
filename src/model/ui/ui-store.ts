@@ -50,6 +50,12 @@ const EXPANDABLE_VIEW_CARD_KEYS = [
 ] as const;
 export type ExpandableViewCardKey = typeof EXPANDABLE_VIEW_CARD_KEYS[number];
 
+const COLLAPSIBLE_SECTION_KEYS = [
+    'httpRequestHeaders',
+    'httpResponseHeaders'
+] as const;
+export type CollapsibleSectionKey = typeof COLLAPSIBLE_SECTION_KEYS[number];
+
 const isExpandableViewCard = (key: any): key is ExpandableViewCardKey =>
     EXPANDABLE_VIEW_CARD_KEYS.includes(key);
 
@@ -131,7 +137,7 @@ export class UiStore {
         // logout & subscription expiration (even if that happened while the app was
         // closed), but don't get reset when the app starts with stale account data.
         observe(this.accountStore, 'accountDataLastUpdated', () => {
-            if (!this.accountStore.isPaidUser) {
+            if (!this.accountStore.user.isPaidUser()) {
                 this.setTheme('automatic');
             }
         });
@@ -255,6 +261,14 @@ export class UiStore {
 
     @observable
     expandedViewCard: ExpandableViewCardKey | undefined;
+
+    // Store the state for various persistently collapsible sections here - true
+    // is open, false is collapsed.
+    @observable
+    readonly collapsibleSectionStates: { [key in CollapsibleSectionKey]: boolean } = {
+        'httpRequestHeaders': true,
+        'httpResponseHeaders': true
+    };
 
     @observable
     viewScrollPosition: number | 'end' = 'end';
@@ -434,7 +448,7 @@ export class UiStore {
 
     @computed
     get customFilters() {
-        if (this.accountStore.isPaidUser) {
+        if (this.accountStore.user.isPaidUser()) {
             return this._customFilters;
         } else {
             return {};

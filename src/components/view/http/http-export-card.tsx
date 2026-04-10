@@ -99,7 +99,7 @@ const ExportSnippetEditor = observer((p: {
                     Find out more
                 </DocsLink>
                 <CopyButtonPill content={snippet}>
-                    {' '}Copy snippet
+                    Copy snippet
                 </CopyButtonPill>
             </SnippetDetailButtons>
         </SnippetDescriptionContainer>
@@ -142,7 +142,7 @@ export class HttpExportCard extends React.Component<ExportCardProps> {
 
     render() {
         const { exchange, accountStore } = this.props;
-        const { isPaidUser } = accountStore!;
+        const isPaidUser = accountStore!.user.isPaidUser();
 
         return <CollapsibleCard {...this.props}>
             <header>

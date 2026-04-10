@@ -27,7 +27,9 @@ import {
     TimeoutStep,
     CloseConnectionStep,
     ResetConnectionStep,
-    FromFileResponseStep
+    FromFileResponseStep,
+    WebhookStep,
+    DelayStep
 } from '../../model/rules/definitions/http-rule-definitions';
 import {
     WebSocketPassThroughStep,
@@ -109,12 +111,16 @@ const instantiateStep = (
             return new ResponseBreakpointStep(rulesStore);
         case 'request-and-response-breakpoint':
             return new RequestAndResponseBreakpointStep(rulesStore);
+        case 'delay':
+            return new DelayStep(0);
         case 'timeout':
             return new TimeoutStep();
         case 'close-connection':
             return new CloseConnectionStep();
         case 'reset-connection':
             return new ResetConnectionStep();
+        case 'webhook':
+            return new WebhookStep('http://', ['request', 'response']);
 
         case 'ws-passthrough':
             return new WebSocketPassThroughStep(rulesStore);
@@ -190,7 +196,7 @@ export const StepSelector = inject('rulesStore', 'accountStore')(observer((p: {
 }) => {
     let [ allowedSteps, needProSteps ] = _.partition(
         p.availableSteps,
-        (stepClass) => p.accountStore!.isPaidUser || !isPaidStepClass(p.ruleType, stepClass)
+        (stepClass) => p.accountStore!.user.isPaidUser() || !isPaidStepClass(p.ruleType, stepClass)
     );
 
     // Pull the breakpoint steps to the top, since they're kind of separate

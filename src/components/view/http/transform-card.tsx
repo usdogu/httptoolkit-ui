@@ -5,10 +5,11 @@ import { observer } from 'mobx-react-lite';
 import { styled } from '../../../styles';
 
 import { ContentPerspective, UiStore } from '../../../model/ui/ui-store';
+import { areStepsModifying } from '../../../model/rules/rules';
 
-import { PillSelect } from '../../common/pill';
+import { Pill, PillSelect } from '../../common/pill';
 import { MediumCard } from '../../common/card';
-import { MatchedRuleData, MatchedRulePill, shouldShowRuleDetails } from './matched-rule-pill';
+import { MatchedRuleData, MatchedRulePill } from './matched-rule-pill';
 
 const DropdownContainer = styled.div`
     display: inline-block;
@@ -44,13 +45,17 @@ export const TransformCard = (p: {
     onRuleClicked: () => void,
     uiStore: UiStore
 }) => {
-    if (!shouldShowRuleDetails(p.matchedRuleData)) return null;
-
-    return <MediumCard>
-        <MatchedRulePill
-            ruleData={p.matchedRuleData!}
+    const rulePill = areStepsModifying(p.matchedRuleData?.stepTypes)
+        ? <MatchedRulePill
+            ruleData={p.matchedRuleData}
             onClick={p.onRuleClicked}
         />
+        // This can happen if e.g. upstream returns a response but
+        // downstream has aborted already:
+        : <Pill>Inconsistent perspectives</Pill>;
+
+    return <MediumCard>
+        {rulePill}
 
         <PerspectiveSelector
             uiStore={p.uiStore}

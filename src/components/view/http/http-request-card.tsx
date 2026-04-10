@@ -5,6 +5,7 @@ import { HtkRequest, HttpVersion, HttpExchangeView } from '../../../types';
 
 import { getSummaryColor } from '../../../model/events/categorization';
 import { getMethodDocs } from '../../../model/http/http-docs';
+import { areStepsModifying } from '../../../model/rules/rules';
 
 import {
     CollapsibleCardHeading,
@@ -26,10 +27,10 @@ import {
 import { DocsLink } from '../../common/docs-link';
 import { SourceIcon } from '../../common/source-icon';
 import { HttpVersionPill } from '../../common/http-version-pill';
-import { HeaderDetails } from './header-details';
+import { HeaderDetails, HeaderHeadingContainer } from './header-details';
 import { UrlBreakdown } from '../url-breakdown';
 import { StepClassKey } from '../../../model/rules/rules';
-import { MatchedRulePill, shouldShowRuleDetails } from './matched-rule-pill';
+import { MatchedRulePill } from './matched-rule-pill';
 
 const RawRequestDetails = (p: {
     request: HtkRequest,
@@ -82,12 +83,20 @@ const RawRequestDetails = (p: {
             }
         </CollapsibleSection>
 
-        <ContentLabelBlock>Headers</ContentLabelBlock>
-        <HeaderDetails
-            httpVersion={p.httpVersion}
-            headers={p.request.rawHeaders}
-            requestUrl={p.request.parsedUrl}
-        />
+        <CollapsibleSection
+            contentName='Headers'
+            collapsePersistKey='httpRequestHeaders'
+        >
+            <HeaderHeadingContainer>
+                <ContentLabelBlock>Headers</ContentLabelBlock>
+            </HeaderHeadingContainer>
+
+            <HeaderDetails
+                httpVersion={p.httpVersion}
+                headers={p.request.rawHeaders}
+                requestUrl={p.request.parsedUrl}
+            />
+        </CollapsibleSection>
     </div>;
 }
 
@@ -106,7 +115,7 @@ export const HttpRequestCard = observer((props: HttpRequestCardProps) => {
 
     return <CollapsibleCard {...props} direction='right'>
         <header>
-            { shouldShowRuleDetails(matchedRuleData) &&
+            { areStepsModifying(matchedRuleData?.stepTypes) &&
                 <MatchedRulePill
                     ruleData={matchedRuleData}
                     onClick={onRuleClicked}

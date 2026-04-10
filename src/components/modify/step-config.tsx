@@ -20,13 +20,14 @@ import {
     stringToBuffer,
     bufferToString
 } from '../../util/buffer';
+import { formatDuration } from '../../util/text';
 import {
     getHeaderValue,
     headersToRawHeaders,
     rawHeadersToHeaders,
     HEADER_NAME_REGEX,
     setHeaderValue
-} from '../../util/headers';
+} from '../../model/http/headers';
 import {
     ADVANCED_PATCH_TRANSFORMS,
     serverSupports
@@ -37,7 +38,8 @@ import {
     RuleType,
     getRulePartKey,
     AvailableStepKey,
-    isHttpCompatibleType
+    isHttpCompatibleType,
+    MatchReplacePairs
 } from '../../model/rules/rules';
 import {
     StaticResponseStep,
@@ -49,10 +51,13 @@ import {
     RequestBreakpointStep,
     ResponseBreakpointStep,
     RequestAndResponseBreakpointStep,
+    DelayStep,
     TimeoutStep,
     CloseConnectionStep,
     ResetConnectionStep,
-    FromFileResponseStep
+    FromFileResponseStep,
+    WebhookStep,
+    RequestWebhookEvents
 } from '../../model/rules/definitions/http-rule-definitions';
 import {
     WebSocketPassThroughStep,
@@ -176,12 +181,16 @@ export function StepConfiguration(props: {
             return <ResponseBreakpointStepConfig {...configProps} />;
         case 'request-and-response-breakpoint':
             return <RequestAndResponseBreakpointStepConfig {...configProps} />;
+        case 'delay':
+            return <WaitForDurationConfig {...configProps} />;
         case 'timeout':
             return <TimeoutStepConfig {...configProps} />;
         case 'close-connection':
             return <CloseConnectionStepConfig {...configProps} />;
         case 'reset-connection':
             return <ResetConnectionStepConfig {...configProps} />;
+        case 'webhook':
+            return <WebhookStepConfig {...configProps} />;
 
         case 'ws-echo':
             return <WebSocketEchoStepConfig {...configProps} />;
@@ -225,7 +234,7 @@ export function StepConfiguration(props: {
         case 'wait-for-rtc-media':
             return <RTCWaitForMediaConfig {...configProps} />;
         case 'wait-for-duration':
-            return <RTCWaitForDurationConfig {...configProps} />;
+            return <WaitForDurationConfig {...configProps} />;
         case 'wait-for-rtc-data-channel':
             return <RTCWaitForChannelConfig {...configProps} />;
         case 'wait-for-rtc-message':
@@ -252,7 +261,7 @@ const SectionLabel = styled.h2`
     width: 100%;
 `;
 
-const ConfigSelect = styled(Select)`
+const ContentTypeSelect = styled(Select)`
     font-size: ${p => p.theme.textSize};
     width: auto;
 `;
@@ -456,14 +465,14 @@ class StaticResponseStepConfig extends StepConfig<StaticResponseStep | RejectWeb
                     content={body}
                     onFormatted={this.setBody}
                 />
-                <ConfigSelect value={this.contentType} onChange={this.setContentType}>
+                <ContentTypeSelect value={this.contentType} onChange={this.setContentType}>
                     <option value="text">Plain text</option>
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
                     <option value="html">HTML</option>
                     <option value="css">CSS</option>
                     <option value="javascript">JavaScript</option>
-                </ConfigSelect>
+                </ContentTypeSelect>
             </BodyHeader>
             <BodyContainer>
                 <SelfSizedEditor
@@ -698,7 +707,9 @@ class ForwardToHostStepConfig extends StepConfig<
             const { updateHostHeader } = this.props.step.transformRequest?.replaceHost || {};
             runInAction(() => {
                 this.target = savedTarget;
-                this.updateHostHeader = !!updateHostHeader ?? true;
+                this.updateHostHeader = updateHostHeader !== undefined
+                    ? (!!updateHostHeader)
+                    : true;
             });
         }));
     }
@@ -742,18 +753,13 @@ class ForwardToHostStepConfig extends StepConfig<
             />
 
             <SectionLabel>Host header</SectionLabel>
-            <ConfigSelect
-                value={updateHostHeader.toString()}
-                onChange={onUpdateHeaderChange}
-                title={dedent`
-                    Most servers will not accept ${messageType}s that arrive
-                    with the wrong host header, so it's typically useful
-                    to automatically change it to match the new host
-                `}
-            >
-                <option value={'true'}>Update the host header automatically (recommended)</option>
-                <option value={'false'}>Leave the host header untouched</option>
-            </ConfigSelect>
+
+            <HostHeaderSelector
+                updateHostHeader={updateHostHeader}
+                messageType={messageType}
+                onUpdateHeaderChange={onUpdateHeaderChange}
+            />
+
             { savedTarget &&
                 <ConfigExplanation>
                     All matching {messageType}s will be forwarded to {savedTarget},
@@ -838,8 +844,8 @@ class ForwardToHostStepConfig extends StepConfig<
     }
 
     @action.bound
-    onUpdateHeaderChange(event: React.ChangeEvent<HTMLSelectElement>) {
-        this.updateHostHeader = event.target.value === 'true';
+    onUpdateHeaderChange(value: boolean) {
+        this.updateHostHeader = value;
 
         try {
             this.updateStep();
@@ -847,6 +853,25 @@ class ForwardToHostStepConfig extends StepConfig<
             // If there's an error, it must be in the host name, so it's reported elsewhere
         }
     }
+}
+
+const HostHeaderSelector = (props: {
+    updateHostHeader: boolean,
+    messageType: 'request' | 'WebSocket',
+    onUpdateHeaderChange: (value: boolean) => void
+}) => {
+    return <Select
+        value={props.updateHostHeader.toString()}
+        onChange={e => props.onUpdateHeaderChange(e.target.value === 'true')}
+        title={dedent`
+            Most servers will not accept ${props.messageType}s that arrive
+            with the wrong host header, so it's typically useful
+            to automatically change it to match the new host
+        `}
+    >
+        <option value={'true'}>Update the host header automatically (recommended)</option>
+        <option value={'false'}>Leave the host header untouched</option>
+    </Select>
 }
 
 const TransformSectionLabel = styled(SectionLabel)`
@@ -861,7 +886,7 @@ const TransformSectionSeparator = styled.hr`
 `;
 
 const TransformConfig = styled.div`
-    margin: 0 0 5px;
+    margin: 0 0 5px 0;
 
     ${(p: { active: boolean }) => p.active && css`
         border-left: solid 5px ${p => p.theme.containerWatermark};
@@ -871,7 +896,16 @@ const TransformConfig = styled.div`
         }
 
         padding-left: 5px;
+
         margin: 10px 0 15px;
+
+        @supports selector(:has(*:nth-child(2))) {
+            margin: 0 0 15px 0;
+
+            &:has(> *:nth-child(2)) {
+                margin: 10px 0 15px;
+            }
+        }
     `}
 `;
 
@@ -908,6 +942,10 @@ class TransformingStepConfig extends StepConfig<TransformingStep, { rulesStore?:
             <MethodTransformConfig
                 replacementMethod={this.transformRequest?.replaceMethod}
                 onChange={this.transformField('transformRequest')('replaceMethod')}
+            />
+            <UrlTransformConfig
+                transform={this.transformRequest}
+                onChange={this.transformField('transformRequest')}
             />
             <HeadersTransformConfig
                 type='request'
@@ -982,7 +1020,7 @@ const MethodTransformConfig = (props: {
                 }
             }
         }>
-            <option value='none'>Pass through the real request method</option>
+            <option value='none'>Use the original request method</option>
             {
                 MethodNames.map((name) =>
                     <option key={name} value={name}>
@@ -991,6 +1029,219 @@ const MethodTransformConfig = (props: {
                 )
             }
         </SelectTransform>
+    </TransformConfig>;
+};
+
+const UrlTransformKeys = [
+    'setProtocol',
+    'replaceHost',
+    'matchReplaceHost',
+    'matchReplacePath',
+    'matchReplaceQuery'
+] as const;
+
+type UrlTransformKey = typeof UrlTransformKeys[number];
+
+const UrlTransformConfig = (props: {
+    transform: RequestTransform,
+    onChange: <F extends UrlTransformKey>(field: F) => (value: RequestTransform[F] | undefined) => void
+}) => {
+    const isActive = UrlTransformKeys.some(k => !!props.transform[k]);
+    const [modifyUrl, setModifyUrl] = React.useState(isActive);
+
+    return <TransformConfig active={modifyUrl}>
+        <SelectTransform
+            aria-label='Select whether the request URL should be transformed'
+            value={modifyUrl ? 'modify' : 'none'}
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+                const value = event.target.value as 'modify' | 'none';
+
+                if (value === 'none') {
+                    UrlTransformKeys.forEach((key) => props.onChange(key)(undefined));
+                    setModifyUrl(false);
+                } else {
+                    setModifyUrl(true);
+                }
+            }
+        }>
+            <option value='none'>Use the original URL</option>
+            <option value='modify'>Modify the request URL</option>
+        </SelectTransform>
+        { modifyUrl && <>
+            <TransformSectionLabel>Request URL modifications</TransformSectionLabel>
+
+            <TransformConfig active={!!props.transform.setProtocol}>
+                <SelectTransform
+                    aria-label='Select how the request protocol should be transformed'
+                    value={props.transform.setProtocol || 'none'}
+                    onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+                        const value = event.target.value as 'none' | 'http' | 'https';
+
+                        if (value === 'none') {
+                            props.onChange('setProtocol')(undefined);
+                        } else {
+                            props.onChange('setProtocol')(value);
+                        }
+                    }
+                }>
+                    <option value='none'>Use the original request protocol</option>
+                    <option value='http'>Change the request protocol to HTTP</option>
+                    <option value='https'>Change the request protocol to HTTPS</option>
+                </SelectTransform>
+            </TransformConfig>
+
+            <UrlHostTransformDetails
+                transform={props.transform}
+                onChange={props.onChange}
+            />
+
+            <UrlTransformDetails
+                partName='path'
+                transform={props.transform.matchReplacePath}
+                onChange={props.onChange('matchReplacePath')}
+            />
+
+            <UrlTransformDetails
+                partName='query'
+                transform={props.transform.matchReplaceQuery}
+                onChange={props.onChange('matchReplaceQuery')}
+            />
+        </> }
+    </TransformConfig>
+}
+
+const UrlHostTransformDetails = (props: {
+    transform: RequestTransform,
+    onChange: <F extends 'replaceHost' | 'matchReplaceHost'>(field: F) => (value: RequestTransform[F] | undefined) => void
+}) => {
+    const hostTransform = props.transform.replaceHost ||
+        props.transform.matchReplaceHost;
+
+    const selected = props.transform.replaceHost
+            ? 'replaceHost'
+        : props.transform.matchReplaceHost
+            ? 'matchReplaceHost'
+        : 'none';
+
+
+    const [updateHostHeader, setUpdateHostHeader] = React.useState(
+        hostTransform?.updateHostHeader ?? true
+    );
+
+    return <TransformConfig active={selected !== 'none'}>
+        <SelectTransform
+            aria-label='Select how the request host should be transformed'
+            value={selected ?? 'none'}
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+                const value = event.target.value as 'none' | 'replaceHost' | 'matchReplaceHost';
+
+                if (value === 'none') {
+                    props.onChange('replaceHost')(undefined);
+                    props.onChange('matchReplaceHost')(undefined);
+                } else if (value === 'replaceHost') {
+                    props.onChange('matchReplaceHost')(undefined);
+                    props.onChange('replaceHost')({ targetHost: '', updateHostHeader: true });
+                } else {
+                    props.onChange('replaceHost')(undefined);
+                    props.onChange('matchReplaceHost')({ replacements: [], updateHostHeader: true });
+                }
+            }}
+        >
+            <option value='none'>Use the original request host</option>
+            <option value='replaceHost'>Replace the request host</option>
+            <option value='matchReplaceHost'>Match & replace parts of the request host</option>
+        </SelectTransform>
+        { selected === 'replaceHost' &&
+            <TransformDetails>
+                <TransformSectionLabel>Replacement host</TransformSectionLabel>
+                <WideTextInput
+                    placeholder='example.com'
+                    spellCheck={false}
+
+                    value={props.transform.replaceHost!.targetHost}
+                    onChange={(event) => {
+                        try {
+                            const value = event.target.value;
+                            props.onChange('replaceHost')({
+                                targetHost: event.target.value,
+                                updateHostHeader
+                            });
+
+                            if (!value) {
+                                throw new Error('A replacement host is required');
+                            }
+
+                            event.target.setCustomValidity('');
+                        } catch (e) {
+                            const message = asError(e).message;
+                            event.target.setCustomValidity(message);
+                        }
+                        event.target.reportValidity();
+                    }}
+                />
+            </TransformDetails>
+        }
+        { selected === 'matchReplaceHost' &&
+            <MatchReplaceTransformConfig
+                replacements={props.transform.matchReplaceHost!.replacements}
+                updateReplacements={(replacements) => {
+                    props.onChange('matchReplaceHost')({
+                        replacements,
+                        updateHostHeader
+                    });
+                }}
+                valueValidation={(hostValue) => {
+                    if (hostValue.includes('/')) {
+                        return `Request transform replacement hosts cannot include a path or protocol, but "${hostValue}" does`;
+                    } else {
+                        return true;
+                    }
+                }}
+            />
+        }
+        { selected !== 'none' && <TransformDetails>
+            <TransformSectionLabel>Host header</TransformSectionLabel>
+            <HostHeaderSelector
+                messageType='request'
+                updateHostHeader={!!updateHostHeader}
+                onUpdateHeaderChange={setUpdateHostHeader}
+            />
+        </TransformDetails> }
+    </TransformConfig>;
+}
+
+const UrlTransformDetails = (props: {
+    partName: 'path' | 'query',
+    transform: MatchReplacePairs | undefined,
+    onChange: (value: MatchReplacePairs | undefined) => void
+}) => {
+    const selected = props.transform !== undefined
+        ? 'matchReplace'
+        : 'none';
+
+    return <TransformConfig active={selected !== 'none'}>
+        <SelectTransform
+            aria-label={`Select how the ${props.partName} should be transformed`}
+            value={selected ?? 'none'}
+            onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+                const value = event.target.value as 'none' | 'matchReplace';
+
+                if (value === 'none') {
+                    props.onChange(undefined);
+                } else {
+                    props.onChange([]);
+                }
+            }
+        }>
+            <option value='none'>Use the original request {props.partName}</option>
+            <option value='matchReplace'>Match & replace parts of the request {props.partName}</option>
+        </SelectTransform>
+        { selected === 'matchReplace' &&
+            <MatchReplaceTransformConfig
+                replacements={props.transform!}
+                updateReplacements={props.onChange}
+            />
+        }
     </TransformConfig>;
 };
 
@@ -1016,7 +1267,7 @@ const StatusTransformConfig = (props: {
                 }
             }
         }>
-            <option value='none'>Pass through the real response status</option>
+            <option value='none'>Use the original response status</option>
             <option value='replace'>Replace the response status</option>
         </SelectTransform>
         {
@@ -1073,7 +1324,7 @@ class HeadersTransformConfig<T extends RequestTransform | ResponseTransform> ext
                 value={selected}
                 onChange={onTransformTypeChange}
             >
-                <option value='none'>Pass through the real { type } headers</option>
+                <option value='none'>Use the original { type } headers</option>
                 <option value='updateHeaders'>Update the { type } headers</option>
                 <option value='replaceHeaders'>Replace the { type } headers</option>
             </SelectTransform>
@@ -1168,7 +1419,7 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
                 aria-label={`Select how the ${type} body should be transformed`}
                 value={selected}
                 onChange={onTransformTypeChange}>
-                <option value='none'>Pass through the real { type } body</option>
+                <option value='none'>Use the original { type } body</option>
                 <option value='replaceBody'>Replace the { type } body with a fixed value</option>
                 <option value='replaceBodyFromFile'>Replace the { type } body with a file</option>
                 <option value='updateJsonBody'>Update a JSON { type } body by merging data</option>
@@ -1213,8 +1464,7 @@ class BodyTransformConfig<T extends RequestTransform | ResponseTransform> extend
                         updateOperations={setJsonBodyPatch}
                     />
                 : selected === 'matchReplaceBody'
-                    ? <MatchReplaceBodyTransformConfig
-                        type={type}
+                    ? <MatchReplaceTransformConfig
                         replacements={transform.matchReplaceBody!}
                         updateReplacements={this.props.onChange('matchReplaceBody')}
                     />
@@ -1297,14 +1547,14 @@ const RawBodyTransformConfig = (props: {
                 content={props.body}
                 onFormatted={props.updateBody}
             />
-            <ConfigSelect value={contentType} onChange={onContentTypeChanged}>
+            <ContentTypeSelect value={contentType} onChange={onContentTypeChanged}>
                 <option value="text">Plain text</option>
                 <option value="json">JSON</option>
                 <option value="xml">XML</option>
                 <option value="html">HTML</option>
                 <option value="css">CSS</option>
                 <option value="javascript">JavaScript</option>
-            </ConfigSelect>
+            </ContentTypeSelect>
         </BodyHeader>
         <BodyContainer>
             <SelfSizedEditor
@@ -1412,10 +1662,10 @@ const JsonPatchTransformConfig = (props: {
     </TransformDetails>;
 };
 
-const MatchReplaceBodyTransformConfig = (props: {
-    type: 'request' | 'response',
-    replacements: Array<[RegExp | string, string]>,
-    updateReplacements: (replacements: Array<[RegExp | string, string]>) => void
+const MatchReplaceTransformConfig = (props: {
+    replacements: MatchReplacePairs,
+    updateReplacements: (replacements: MatchReplacePairs) => void,
+    valueValidation?: (value: string) => true | string
 }) => {
     const [error, setError] = React.useState<Error>();
 
@@ -1431,22 +1681,26 @@ const MatchReplaceBodyTransformConfig = (props: {
     );
 
     React.useEffect(() => {
-        const validPairs = replacementPairs.filter((pair) =>
-            validateRegexMatcher(pair.key) === true
-        );
-        const invalidCount = replacementPairs.length - validPairs.length;
+        try {
+            const validPairs = replacementPairs.filter((pair) =>
+                validateRegexMatcher(pair.key) === true
+            );
+            const invalidCount = replacementPairs.length - validPairs.length;
 
-        if (invalidCount > 0) {
-            setError(new Error(
-                `${invalidCount} regular expression${invalidCount === 1 ? ' is' : 's are'} invalid`
+            props.updateReplacements(validPairs.map(({ key, value }) =>
+                [new RegExp(key, 'g'), value]
             ));
-        } else {
-            setError(undefined);
-        }
 
-        props.updateReplacements(validPairs.map(({ key, value }) =>
-            [new RegExp(key, 'g'), value]
-        ));
+            if (invalidCount > 0) {
+                throw new Error(
+                    `${invalidCount} regular expression${invalidCount === 1 ? ' is' : 's are'} invalid`
+                );
+            }
+
+            setError(undefined);
+        } catch (e) {
+            setError(asError(e));
+        }
     }, [replacementPairs]);
 
     return <TransformDetails>
@@ -1458,8 +1712,9 @@ const MatchReplaceBodyTransformConfig = (props: {
             pairs={replacementPairs}
             onChange={updatePairs}
             keyPlaceholder='Regular expression to match'
-            keyValidation={validateRegexMatcher}
             valuePlaceholder='Replacement value'
+            keyValidation={validateRegexMatcher}
+            valueValidation={props.valueValidation}
             allowEmptyValues={true}
         />
     </TransformDetails>;
@@ -1471,12 +1726,89 @@ const MonoKeyEditablePairs = styled(EditablePairs<PairsArray>)`
     }
 `;
 
-const validateRegexMatcher = (value: string) => {
+const validateRegexMatcher = (value: string): true | string => {
     try {
         new RegExp(value, 'g');
         return true;
     } catch (e: any) {
         return e.message ?? e.toString();
+    }
+}
+
+@observer
+class WebhookStepConfig extends StepConfig<WebhookStep> {
+
+    @observable
+    private error: Error | undefined;
+
+    @observable
+    webhookUrl: string = this.props.step.url;
+
+    @observable
+    events: Array<RequestWebhookEvents> = this.props.step.events;
+
+    render() {
+        return <ConfigContainer>
+            <SectionLabel>Webhook target URL</SectionLabel>
+            <UrlInput
+                type="url"
+                value={this.webhookUrl}
+                invalid={!!this.error}
+                spellCheck={false}
+                onChange={this.onUrlChange}
+            />
+
+            <SectionLabel>Webhook events</SectionLabel>
+
+            <label>
+                <input type="checkbox"
+                    checked={this.events.includes('request')}
+                    onChange={(e) => this.setEvent('request', e.target.checked)}
+                />
+                Request received
+            </label>
+            <br />
+            <label>
+                <input
+                    type="checkbox"
+                    checked={this.events.includes('response')}
+                    onChange={(e) => this.setEvent('response', e.target.checked)}
+                />
+                Response sent
+            </label>
+        </ConfigContainer>;
+    }
+
+    @action.bound
+    onUrlChange(event: React.ChangeEvent<HTMLInputElement>) {
+        this.webhookUrl = event.target.value;
+        this.updateStep(event.target);
+    }
+
+    @action.bound
+    setEvent(event: RequestWebhookEvents, enabled: boolean) {
+        if (enabled && !this.events.includes(event)) {
+            this.events.push(event);
+        } else if (!enabled && this.events.includes(event)) {
+            this.events.splice(this.events.indexOf(event), 1);
+        }
+        this.updateStep();
+    }
+
+    updateStep(target?: HTMLInputElement) {
+        try {
+            if (!this.webhookUrl) throw new Error('A webhook URL is required');
+
+            this.props.onChange(new WebhookStep(this.webhookUrl, this.events));
+
+            this.error = undefined;
+            target?.setCustomValidity('');
+        } catch (e) {
+            this.error = asError(e);
+            target?.setCustomValidity(this.error.message);
+            if (this.props.onInvalidState) this.props.onInvalidState();
+        }
+        target?.reportValidity();
     }
 }
 
@@ -1564,7 +1896,7 @@ class TimeoutStepConfig extends StepConfig<TimeoutStep> {
     render() {
         return <ConfigContainer>
             <ConfigExplanation>
-                When a matching {
+                The {
                     isHttpCompatibleType(this.props.ruleType)
                         ? 'request'
                     : this.props.ruleType === 'websocket'
@@ -1572,7 +1904,7 @@ class TimeoutStepConfig extends StepConfig<TimeoutStep> {
                     : this.props.ruleType === 'webrtc'
                         ? (() => { throw new Error('Not compatible with WebRTC rules') })()
                     : unreachableCheck(this.props.ruleType)
-                } is received, the server will keep the connection open but do nothing.
+                } will receive no response, keeping the connection open but doing nothing.
                 With no data or response, most clients will time out and abort the
                 request after sufficient time has passed.
             </ConfigExplanation>
@@ -1585,7 +1917,7 @@ class CloseConnectionStepConfig extends StepConfig<CloseConnectionStep> {
     render() {
         return <ConfigContainer>
             <ConfigExplanation>
-                As soon as a matching {
+                The {
                     isHttpCompatibleType(this.props.ruleType)
                         ? 'request'
                     : this.props.ruleType === 'websocket'
@@ -1593,7 +1925,7 @@ class CloseConnectionStepConfig extends StepConfig<CloseConnectionStep> {
                     : this.props.ruleType === 'webrtc'
                         ? (() => { throw new Error('Not compatible with WebRTC rules') })()
                     : unreachableCheck(this.props.ruleType)
-                } is received, the connection will be cleanly closed, with no response.
+                }'s connection will be cleanly closed, with no response.
             </ConfigExplanation>
         </ConfigContainer>;
     }
@@ -1604,7 +1936,7 @@ class ResetConnectionStepConfig extends StepConfig<ResetConnectionStep> {
     render() {
         return <ConfigContainer>
             <ConfigExplanation>
-                As soon as a matching {
+                The {
                     isHttpCompatibleType(this.props.ruleType)
                         ? 'request'
                     : this.props.ruleType === 'websocket'
@@ -1612,8 +1944,8 @@ class ResetConnectionStepConfig extends StepConfig<ResetConnectionStep> {
                     : this.props.ruleType === 'webrtc'
                         ? (() => { throw new Error('Not compatible with WebRTC rules') })()
                     : unreachableCheck(this.props.ruleType)
-                } is received, the connection will be killed with a TCP RST packet (or a
-                RST_STREAM frame, for HTTP/2 requests).
+                }'s connection will be abruptly killed with a TCP RST packet (or a
+                RST_STREAM frame, for HTTP/2).
             </ConfigExplanation>
         </ConfigContainer>;
     }
@@ -2155,14 +2487,14 @@ class IpfsCatTextStepConfig extends StepConfig<IpfsCatTextStep> {
                     content={body}
                     onFormatted={this.setBody}
                 />
-                <ConfigSelect value={this.contentType} onChange={this.setContentType}>
+                <ContentTypeSelect value={this.contentType} onChange={this.setContentType}>
                     <option value="text">Plain text</option>
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
                     <option value="html">HTML</option>
                     <option value="css">CSS</option>
                     <option value="javascript">JavaScript</option>
-                </ConfigSelect>
+                </ContentTypeSelect>
             </BodyHeader>
             <BodyContainer>
                 <SelfSizedEditor
@@ -2447,24 +2779,28 @@ class RTCWaitForMediaConfig extends StepConfig<WaitForMediaStep> {
 }
 
 @observer
-class RTCWaitForDurationConfig extends StepConfig<WaitForDurationStep> {
+class WaitForDurationConfig extends StepConfig<WaitForDurationStep | DelayStep> {
+
+    @computed
+    get stepDuration() {
+        return 'durationMs' in this.props.step
+            ? this.props.step.durationMs
+            : this.props.step.delayMs;
+    }
 
     @observable
-    duration: number | '' = this.props.step.durationMs;
+    inputDuration: number | '' = this.stepDuration;
 
     componentDidMount() {
         // If the step changes (or when its set initially), update our data fields
         disposeOnUnmount(this, autorun(() => {
-            const { durationMs } = this.props.step;
-            runInAction(() => {
-                if (durationMs === 0 && this.duration === '') return; // Allows clearing the input, making it *implicitly* 0
-                this.duration = durationMs;
-            });
+            if (this.stepDuration === 0 && this.inputDuration === '') return; // Allows clearing the input, making it *implicitly* 0
+            this.inputDuration = this.stepDuration;
         }));
     }
 
     render() {
-        const { duration } = this;
+        const { inputDuration: duration } = this;
 
         return <ConfigContainer>
             Wait for <TextInput
@@ -2473,7 +2809,10 @@ class RTCWaitForDurationConfig extends StepConfig<WaitForDurationStep> {
                 placeholder='Duration (ms)'
                 value={duration}
                 onChange={this.onChange}
-            /> milliseconds.
+            /> milliseconds{
+                duration !== '' && !formatDuration(duration).endsWith('ms') &&
+                    ` (${ formatDuration(duration) })`
+            }.
         </ConfigContainer>
     }
 
@@ -2483,12 +2822,16 @@ class RTCWaitForDurationConfig extends StepConfig<WaitForDurationStep> {
 
         const newValue = inputValue === ''
             ? ''
-            : parseInt(inputValue, 10);
+            : Math.max(parseInt(inputValue, 10) || 0, 0);
 
         if (_.isNaN(newValue)) return; // I.e. reject the edit
 
-        this.duration = newValue;
-        this.props.onChange(new WaitForDurationStep(newValue || 0));
+        this.inputDuration = newValue;
+
+        const step = this.props.ruleType === 'webrtc'
+            ? new WaitForDurationStep(newValue || 0)
+            : new DelayStep(newValue || 0);
+        this.props.onChange(step);
     }
 
 }
@@ -2640,11 +2983,11 @@ class RTCSendMessageStepConfig extends StepConfig<SendStep> {
                     content={message}
                     onFormatted={this.setMessage}
                 />
-                <ConfigSelect value={this.contentType} onChange={this.setContentType}>
+                <ContentTypeSelect value={this.contentType} onChange={this.setContentType}>
                     <option value="text">Plain text</option>
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
-                </ConfigSelect>
+                </ContentTypeSelect>
             </BodyHeader>
             <BodyContainer>
                 <SelfSizedEditor
